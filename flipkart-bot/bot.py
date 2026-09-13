@@ -274,28 +274,40 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # 1. Instant response with latest database snapshot
+    formatted = format_clean_product_list(products, user_pin)
     status_msg = await update.message.reply_text(
-        f"🔍 Checking latest stock and price for {len(products)} products at Pincode {user_pin}..."
-    )
-
-    urls = [p["url"] for p in products]
-    tasks = [asyncio.to_thread(scraper.fetch_product_details, u, user_pin) for u in urls]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    for p, res in zip(products, results):
-        if isinstance(res, dict) and res.get("success"):
-            new_price = res.get("price")
-            new_status = res.get("status", "UNKNOWN")
-            is_in_stock = res.get("is_in_stock", False)
-            db.update_product_status(p["id"], new_price, new_status, is_in_stock)
-
-    updated_products = db.get_user_products(user_id)
-    formatted = format_clean_product_list(updated_products, user_pin)
-    await status_msg.edit_text(
-        formatted,
+        formatted + "\n\n🔄 _Refreshing live Flipkart stock in background..._",
         parse_mode=ParseMode.MARKDOWN,
-        disable_web_page_preview=True
+        disable_web_page_preview=True,
+        reply_markup=get_main_reply_keyboard()
     )
+
+    # 2. Async background refresh for fresh data
+    async def refresh_in_bg():
+        try:
+            urls = [p["url"] for p in products]
+            tasks = [asyncio.to_thread(scraper.fetch_product_details, u, user_pin) for u in urls]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for p, res in zip(products, results):
+                if isinstance(res, dict) and res.get("success"):
+                    new_price = res.get("price")
+                    new_status = res.get("status", "UNKNOWN")
+                    is_in_stock = res.get("is_in_stock", False)
+                    db.update_product_status(p["id"], new_price, new_status, is_in_stock)
+
+            updated = db.get_user_products(user_id)
+            new_formatted = format_clean_product_list(updated, user_pin)
+            await status_msg.edit_text(
+                new_formatted,
+                parse_mode=ParseMode.MARKDOWN,
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            logger.error(f"Error during async refresh: {e}")
+
+    asyncio.create_task(refresh_in_bg())
 
 async def add_product_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
     """Adds a single product by URL."""
