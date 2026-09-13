@@ -1,0 +1,15 @@
+services:
+  - type: worker
+    name: flipkart-telegram-tracker
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        value: 8668368686:AAHN0g20YXv7-V27Y47dnQgutMTOTHPh75g
+      - key: ADMIN_ID
+        value: 5873900420
+      - key: DEFAULT_PINCODE
+        value: 110091
+      - key: DEFAULT_CHECK_INTERVAL
+        value: 5
