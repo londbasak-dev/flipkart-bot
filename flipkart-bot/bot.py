@@ -734,7 +734,34 @@ def main():
     job_queue = application.job_queue
     job_queue.run_repeating(background_stock_checker, interval=DEFAULT_INTERVAL, first=3)
 
-    print(f"🚀 Flipkart Stock Alert Bot running with Green/Red status & Pincode/Add/Remove options!")
+    # Lightweight HTTP server for Render Web Service port detection
+    import threading
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    import os
+
+    class HealthCheckHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"Flipkart Stock Tracker Bot is Healthy and Active!")
+
+        def log_message(self, format, *args):
+            return  # silence health check logs
+
+    port = int(os.environ.get("PORT", 10000))
+    def run_health_server():
+        try:
+            server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+            server.serve_forever()
+        except Exception as e:
+            logger.warning(f"Health server error: {e}")
+
+    health_thread = threading.Thread(target=run_health_server, daemon=True)
+    health_thread.start()
+    logger.info(f"Health check server listening on port {port}")
+
+    print(f"🚀 Flipkart Stock Alert Bot running with Green/Red status & Pincode/Add/Remove options on port {port}!")
     application.run_polling()
 
 if __name__ == "__main__":
