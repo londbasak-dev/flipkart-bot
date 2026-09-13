@@ -82,11 +82,33 @@ def reject_user(user_id: int):
         cursor.execute("UPDATE users SET status = 'rejected' WHERE user_id = ?", (user_id,))
         conn.commit()
 
+def pause_user(user_id: int):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET status = 'paused' WHERE user_id = ?", (user_id,))
+        conn.commit()
+
+def resume_user(user_id: int):
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET status = 'approved' WHERE user_id = ?", (user_id,))
+        conn.commit()
+
+def get_all_users():
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users ORDER BY created_at DESC")
+        return cursor.fetchall()
+
 def is_user_approved(user_id: int, admin_id: int) -> bool:
     if str(user_id) == str(admin_id):
         return True
     user = get_user(user_id)
     return user is not None and user["status"] == "approved"
+
+def is_user_paused(user_id: int) -> bool:
+    user = get_user(user_id)
+    return user is not None and user["status"] == "paused"
 
 def add_product(user_id: int, url: str, title: str, price: int, status: str, is_in_stock: bool):
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -127,7 +149,11 @@ def clear_user_products(user_id: int):
 def get_all_products():
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM tracked_products")
+        cursor.execute('''
+            SELECT p.* FROM tracked_products p
+            JOIN users u ON p.user_id = u.user_id
+            WHERE u.status = 'approved'
+        ''')
         return cursor.fetchall()
 
 def update_product_status(product_id: int, price: int, status: str, is_in_stock: bool):

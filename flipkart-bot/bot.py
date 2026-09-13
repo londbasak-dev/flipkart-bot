@@ -143,9 +143,13 @@ async def check_auth_or_request(update: Update, context: ContextTypes.DEFAULT_TY
         return True
 
     db_user = db.get_user(user_id)
-    if db_user and db_user["status"] == "rejected":
-        await update.message.reply_text("❌ Your access request was declined by the administrator.")
-        return False
+    if db_user:
+        if db_user["status"] == "rejected":
+            await update.message.reply_text("❌ Your access request was declined by the administrator.")
+            return False
+        if db_user["status"] == "paused":
+            await update.message.reply_text("⏸️ *Your bot access is currently paused by the administrator.*", parse_mode=ParseMode.MARKDOWN)
+            return False
 
     db.add_user_request(user_id, user.username, user.first_name)
 
@@ -212,6 +216,58 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             disable_web_page_preview=True,
             reply_markup=reply_markup
         )
+
+def get_admin_panel_markup():
+    users = db.get_all_users()
+    keyboard = []
+    for u in users:
+        uid = u["user_id"]
+        if str(uid) == str(ADMIN_ID):
+            continue
+        uname = f"@{u['username']}" if u["username"] else (u["first_name"] or str(uid))
+        st = u["status"]
+        
+        status_icon = "🟢 Approved" if st == "approved" else ("⏸️ Paused" if st == "paused" else ("❌ Rejected" if st == "rejected" else "⏳ Pending"))
+        
+        row = []
+        if st == "approved":
+            row.append(InlineKeyboardButton(f"⏸️ Pause {uname}", callback_data=f"adm_pause_{uid}"))
+        elif st in ["paused", "rejected", "pending"]:
+            row.append(InlineKeyboardButton(f"▶️ Resume {uname}", callback_data=f"adm_resume_{uid}"))
+        
+        keyboard.append([InlineKeyboardButton(f"👤 {uname} ({status_icon})", callback_data=f"adm_info_{uid}")])
+        if row:
+            keyboard.append(row)
+            
+    keyboard.append([InlineKeyboardButton("🔄 Refresh Admin Panel", callback_data="adm_refresh")])
+    return InlineKeyboardMarkup(keyboard)
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ *Access Denied:* Only the bot administrator can access this panel.", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    users = db.get_all_users()
+    non_admin_users = [u for u in users if str(u["user_id"]) != str(ADMIN_ID)]
+
+    text = (
+        "👑 *ADMIN DASHBOARD*\n\n"
+        f"📊 *Total Registered Users:* {len(non_admin_users)}\n\n"
+        "Here you can view, *Pause (⏸️)* or *Resume (▶️)* any user's access at any time:\n"
+    )
+    
+    if not non_admin_users:
+        text += "_No other users have registered yet._"
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        return
+
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=get_admin_panel_markup()
+    )
+
 
 async def options_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth_or_request(update, context):
@@ -539,6 +595,65 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error messaging rejected user {target_id}: {e}")
         return
 
+    if data.startswith("adm_pause_"):
+        if user_id != ADMIN_ID:
+            await query.edit_message_text("❌ Only the administrator can pause users.")
+            return
+
+        target_id = int(data.replace("adm_pause_", ""))
+        db.pause_user(target_id)
+        target_info = db.get_user(target_id)
+        tname = f"@{target_info['username']}" if target_info and target_info["username"] else (target_info["first_name"] if target_info else target_id)
+        
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text="⏸️ *Your bot access has been temporarily paused by the administrator.*",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception:
+            pass
+
+        await query.edit_message_text(
+            f"⏸️ User *{tname}* has been PAUSED.\nTheir products will not be checked until resumed.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=get_admin_panel_markup()
+        )
+        return
+
+    if data.startswith("adm_resume_"):
+        if user_id != ADMIN_ID:
+            await query.edit_message_text("❌ Only the administrator can resume users.")
+            return
+
+        target_id = int(data.replace("adm_resume_", ""))
+        db.resume_user(target_id)
+        target_info = db.get_user(target_id)
+        tname = f"@{target_info['username']}" if target_info and target_info["username"] else (target_info["first_name"] if target_info else target_id)
+
+        try:
+            await context.bot.send_message(
+                chat_id=target_id,
+                text="▶️ *Your bot access has been resumed by the administrator!*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=get_main_reply_keyboard()
+            )
+        except Exception:
+            pass
+
+        await query.edit_message_text(
+            f"▶️ User *{tname}* has been RESUMED to active status.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=get_admin_panel_markup()
+        )
+        return
+
+    if data == "adm_refresh":
+        if user_id != ADMIN_ID:
+            return
+        await query.edit_message_reply_markup(reply_markup=get_admin_panel_markup())
+        return
+
     if data == "pin_reset_default":
         db.set_user_pincode(user_id, "110091")
         await query.edit_message_text("✅ Pincode reset to default: **110091** (Delhi).", parse_mode=ParseMode.MARKDOWN)
@@ -574,36 +689,40 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             items_to_add = IPHONE_16_128GB + IPHONE_17_256GB
             label = "All Models (iPhone 16 + iPhone 17) [10 Phones]"
 
-        await query.edit_message_text(f"⏳ Adding and checking {label} for Pincode {user_pin}... Please wait.")
-
-        db.clear_user_products(user_id)
-
-        urls = [item[1] for item in items_to_add]
-        tasks = [asyncio.to_thread(scraper.fetch_product_details, u, user_pin) for u in urls]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for (name, url), res in zip(items_to_add, results):
-            title = name
+        # Add products immediately with default values
+        for name, url in items_to_add:
             price = 69900 if "16" in name else 82900
-            status = "NOTIFY_ME"
-            is_in_stock = False
-
-            if isinstance(res, dict) and res.get("success"):
-                title = res.get("title", name)
-                price = res.get("price", price)
-                status = res.get("status", status)
-                is_in_stock = res.get("is_in_stock", False)
-
-            db.add_product(user_id, url, title, price, status, is_in_stock)
+            db.add_product(user_id, url, name, price, "NOTIFY_ME", False)
 
         user_prods = db.get_user_products(user_id)
         formatted = format_clean_product_list(user_prods, user_pin)
-        await query.message.reply_text(
-            formatted,
+        await query.edit_message_text(
+            f"✅ *{label} added successfully!*\n\n" + formatted,
             parse_mode=ParseMode.MARKDOWN,
-            disable_web_page_preview=True,
-            reply_markup=get_main_reply_keyboard()
+            disable_web_page_preview=True
         )
+
+        # Update live Flipkart data in background without blocking Telegram
+        async def refresh_added_models():
+            try:
+                urls = [item[1] for item in items_to_add]
+                tasks = [asyncio.to_thread(scraper.fetch_product_details, u, user_pin) for u in urls]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                current_prods = {p["url"]: p["id"] for p in db.get_user_products(user_id)}
+                for (name, url), res in zip(items_to_add, results):
+                    if isinstance(res, dict) and res.get("success") and url in current_prods:
+                        p_id = current_prods[url]
+                        db.update_product_status(
+                            p_id,
+                            res.get("price"),
+                            res.get("status", "NOTIFY_ME"),
+                            res.get("is_in_stock", False)
+                        )
+            except Exception as e:
+                logger.error(f"Error updating added models: {e}")
+
+        asyncio.create_task(refresh_added_models())
 
 alerted_in_stock = set()
 is_checking = False
@@ -710,13 +829,14 @@ async def post_init(application: Application):
     """Sets the Telegram native Menu button commands."""
     commands = [
         BotCommand("start", "Start bot and show menu"),
-        ("list", "View all tracked devices"),
-        ("check", "Refresh stock status right now"),
-        ("add", "Add a custom product link"),
-        ("remove", "Remove a product from tracking"),
-        ("options", "Select iPhone 16 / 17 / All"),
-        ("pincode", "Set or reset delivery pincode"),
-        ("clear", "Clear all tracked items"),
+        BotCommand("admin", "👑 Admin Dashboard (Pause/Resume users)"),
+        BotCommand("list", "View all tracked devices"),
+        BotCommand("check", "Refresh stock status right now"),
+        BotCommand("add", "Add a custom product link"),
+        BotCommand("remove", "Remove a product from tracking"),
+        BotCommand("options", "Select iPhone 16 / 17 / All"),
+        BotCommand("pincode", "Set or reset delivery pincode"),
+        BotCommand("clear", "Clear all tracked items"),
     ]
     await application.bot.set_my_commands(commands)
     logger.info("Telegram Bot Menu commands configured successfully.")
@@ -728,9 +848,10 @@ def main():
         print("ERROR: TELEGRAM_BOT_TOKEN is not set.")
         return
 
-    application = Application.builder().token(TOKEN).post_init(post_init).build()
+    application = Application.builder().token(TOKEN).post_init(post_init).concurrent_updates(True).build()
 
     application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("options", options_command))
     application.add_handler(CommandHandler("list", list_command))
     application.add_handler(CommandHandler("check", check_command))
